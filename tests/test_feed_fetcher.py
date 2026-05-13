@@ -1,5 +1,6 @@
 """Tests for the Feed Fetcher module."""
 import pytest
+from types import SimpleNamespace
 from src.feed_fetcher import FeedFetcher, Article
 
 
@@ -31,3 +32,21 @@ class TestFeedFetcher:
         articles = fetcher.fetch()
         ai_articles = [a for a in articles if a.category == "ai"]
         assert len(ai_articles) > 0, "Should have AI articles"
+
+    def test_skips_invalid_rss_entries_missing_title_or_url(self, monkeypatch):
+        """Invalid RSS entries should be skipped during normalization."""
+        def fake_parse(_url):
+            return SimpleNamespace(entries=[
+                {"title": "", "link": "https://example.com/no-title", "published": "Wed, 13 May 2026 00:00:00 GMT"},
+                {"title": "No URL", "link": "", "published": "Wed, 13 May 2026 00:00:00 GMT"},
+                {"title": "Valid", "link": "https://example.com/ok", "published": "Wed, 13 May 2026 00:00:00 GMT"},
+            ])
+
+        monkeypatch.setattr("src.feed_fetcher.feedparser.parse", fake_parse)
+
+        fetcher = FeedFetcher(sources=[{"name": "Test", "url": "https://example.com/feed", "category": "ai", "type": "rss"}])
+        articles = fetcher.fetch()
+
+        assert len(articles) == 1
+        assert articles[0].title == "Valid"
+        assert articles[0].url == "https://example.com/ok"

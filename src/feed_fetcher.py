@@ -99,12 +99,17 @@ class FeedFetcher:
         feed = feedparser.parse(source["url"])
         articles = []
         for entry in feed.entries:
+            title = str(entry.get("title") or "").strip()
+            url = str(entry.get("guid") or entry.get("link") or "").strip()
+            if not title or not url:
+                continue
+
             article = Article(
-                title=entry.get("title", ""),
-                summary=entry.get("description", ""),
-                url=entry.get("guid") or entry.get("link", ""),
+                title=title,
+                summary=str(entry.get("description") or ""),
+                url=url,
                 source=source["name"],
-                date=entry.get("published", ""),
+                date=str(entry.get("published") or ""),
                 category=source["category"],
             )
             articles.append(article)
