@@ -2,6 +2,7 @@
 import pytest
 import tempfile
 import os
+from types import SimpleNamespace
 from src.feed_fetcher import FeedFetcher, Article
 from src.pipeline import Pipeline
 from src.error_logger import ErrorLogger
@@ -31,6 +32,43 @@ class TestFeedFetcherErrorHandling:
         fetcher = FeedFetcher(sources=sources)
         articles = fetcher.fetch()
         assert articles == []
+
+    def test_logs_source_error_and_continues_with_good_source(self, monkeypatch):
+        """Broken source should be logged while good source still yields articles."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = os.path.join(tmpdir, "errors.log")
+            logger = ErrorLogger(log_path)
+
+            sources = [
+                {"name": "Bad Source", "url": "https://bad.example.com/rss", "category": "ai", "type": "rss"},
+                {"name": "Good Source", "url": "https://good.example.com/rss", "category": "ai", "type": "rss"},
+            ]
+
+            def fake_parse(url):
+                if "bad.example.com" in url:
+                    raise RuntimeError("boom")
+                return SimpleNamespace(entries=[
+                    {
+                        "title": "Good article",
+                        "link": "https://good.example.com/post",
+                        "description": "ok",
+                        "published": "Wed, 13 May 2026 00:00:00 GMT",
+                    }
+                ])
+
+            monkeypatch.setattr("src.feed_fetcher.feedparser.parse", fake_parse)
+
+            fetcher = FeedFetcher(sources=sources, error_logger=logger)
+            articles = fetcher.fetch()
+
+            assert len(articles) == 1
+            assert articles[0].source == "Good Source"
+
+            errors = logger.read()
+            assert len(errors) == 1
+            assert errors[0]["source"] == "Bad Source"
+            assert errors[0]["error_type"] == "RuntimeError"
+            assert "boom" in errors[0]["message"]
 
 
 class TestPipelineErrorHandling:

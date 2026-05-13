@@ -32,9 +32,10 @@ DEFAULT_SOURCES = [
 class FeedFetcher:
     """Fetches and normalizes articles from configured sources."""
 
-    def __init__(self, sources=None, queue_path=None):
+    def __init__(self, sources=None, queue_path=None, error_logger=None):
         self.sources = sources or DEFAULT_SOURCES
         self.queue_manager = QueueManager(queue_path) if queue_path else None
+        self.error_logger = error_logger
 
     def fetch(self) -> List[Article]:
         """Fetch articles from all configured sources and queue."""
@@ -50,9 +51,13 @@ class FeedFetcher:
                     articles.extend(self._fetch_hn(source))
                 elif source_type == "github_releases":
                     articles.extend(self._fetch_github_releases(source))
-            except Exception:
-                # Silent skip on error
-                pass
+            except Exception as exc:
+                if self.error_logger:
+                    self.error_logger.log(
+                        source.get("name", "unknown"),
+                        type(exc).__name__,
+                        str(exc),
+                    )
 
         # Fetch from personal queue
         if self.queue_manager:
