@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import List
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 from src.feed_fetcher import Article
 
 
@@ -67,8 +68,10 @@ class PreFilter:
         unique = []
 
         for article in articles:
+            canonical_url = self._canonicalize_url(article.url)
+
             # Check URL dedup
-            if article.url in seen_urls:
+            if canonical_url in seen_urls:
                 continue
 
             # Check title similarity
@@ -80,8 +83,25 @@ class PreFilter:
                     break
 
             if not is_dup:
-                seen_urls.add(article.url)
+                seen_urls.add(canonical_url)
                 seen_titles.append(article.title)
                 unique.append(article)
 
         return unique
+
+    def _canonicalize_url(self, url: str) -> str:
+        """Normalize URL for deduplication (strip common tracking params)."""
+        if not url:
+            return ""
+
+        parts = urlsplit(url)
+        filtered_query = []
+        for key, value in parse_qsl(parts.query, keep_blank_values=True):
+            lower = key.lower()
+            if lower.startswith("utm_") or lower in {"fbclid", "gclid", "mc_cid", "mc_eid"}:
+                continue
+            filtered_query.append((key, value))
+
+        normalized_query = urlencode(filtered_query, doseq=True)
+        normalized_path = parts.path.rstrip("/") or "/"
+        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), normalized_path, normalized_query, ""))

@@ -46,3 +46,11 @@ class TestDeduplication:
         pre_filter = PreFilter()
         result = pre_filter.deduplicate([])
         assert result == []
+
+    def test_deduplicates_canonical_urls_with_tracking_params(self):
+        """Same URL with tracking query params should be treated as duplicates."""
+        a1 = self._make_article(url="https://example.com/article?utm_source=newsletter", title="AI launch")
+        a2 = self._make_article(url="https://example.com/article", title="AI launch mirrored", source="Source B")
+        pre_filter = PreFilter()
+        result = pre_filter.deduplicate([a1, a2])
+        assert len(result) == 1
