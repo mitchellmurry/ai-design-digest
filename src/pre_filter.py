@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 from typing import List
 from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 from src.feed_fetcher import Article
 
 
@@ -28,12 +29,33 @@ class PreFilter:
     def _is_recent(self, article: Article, cutoff: datetime) -> bool:
         """Check if article date is after cutoff."""
         try:
-            # RSS date format: "Wed, 13 May 2026 00:00:00 GMT"
-            article_date = datetime.strptime(article.date, "%a, %d %b %Y %H:%M:%S %Z")
+            article_date = self._parse_article_date(article.date)
             return article_date >= cutoff
         except (ValueError, TypeError):
             # If date parsing fails, include the article (safe default)
             return True
+
+    def _parse_article_date(self, raw_date: str) -> datetime:
+        """Parse common RSS/Atom/ISO date formats into a naive local datetime."""
+        if not raw_date:
+            raise ValueError("Missing date")
+
+        # RFC-822/RSS style, e.g. "Wed, 13 May 2026 00:00:00 GMT"
+        try:
+            parsed = parsedate_to_datetime(raw_date)
+            if parsed is not None:
+                if parsed.tzinfo is not None:
+                    return parsed.astimezone().replace(tzinfo=None)
+                return parsed
+        except (TypeError, ValueError):
+            pass
+
+        # ISO-8601 style, e.g. "2026-05-13T00:00:00Z"
+        normalized = raw_date.replace("Z", "+00:00")
+        parsed_iso = datetime.fromisoformat(normalized)
+        if parsed_iso.tzinfo is not None:
+            return parsed_iso.astimezone().replace(tzinfo=None)
+        return parsed_iso
 
     def deduplicate(self, articles: List[Article]) -> List[Article]:
         """Remove duplicate articles by URL and similar titles."""

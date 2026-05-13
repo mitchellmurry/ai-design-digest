@@ -41,3 +41,20 @@ class TestPreFilter:
         pre_filter = PreFilter(max_age_hours=24)
         result = pre_filter.filter([])
         assert result == []
+
+    def test_filters_old_articles_with_iso8601_dates(self):
+        """Old ISO-8601 timestamps should be filtered out, not auto-included."""
+        old_iso_date = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old_article = Article(
+            title="Old ISO Article",
+            summary="Test summary",
+            url="https://example.com/old-iso",
+            source="Test Source",
+            date=old_iso_date,
+            category="ai",
+        )
+
+        pre_filter = PreFilter(max_age_hours=24)
+        result = pre_filter.filter([old_article])
+
+        assert result == []
