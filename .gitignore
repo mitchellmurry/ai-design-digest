@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-output/
-venv/
-
-# Project files (not needed in digest repo)
-PRD.md
-PROJECT.md
