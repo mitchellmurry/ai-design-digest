@@ -1,62 +1,80 @@
 """Pre-Filter — filters articles by age, topic, and deduplication."""
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import List
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
+from zoneinfo import ZoneInfo
 from src.feed_fetcher import Article
 
 
 class PreFilter:
     """Filters articles based on age and relevance criteria."""
 
+    CENTRAL_TZ = ZoneInfo("America/Chicago")
+
     def __init__(self, max_age_hours: int = 24):
         self.max_age_hours = max_age_hours
 
-    def filter(self, articles: List[Article]) -> List[Article]:
-        """Filter articles by age window."""
+    def filter(self, articles: List[Article], run_date: str | date | datetime | None = None) -> List[Article]:
+        """Filter articles to prior 5:00 AM CT -> current 5:00 AM CT window."""
         if not articles:
             return []
 
-        cutoff = datetime.now() - timedelta(hours=self.max_age_hours)
+        start_utc, end_utc = self._compute_5am_ct_window(run_date)
         filtered = []
 
         for article in articles:
-            if self._is_recent(article, cutoff):
+            if self._is_in_window(article, start_utc, end_utc):
                 filtered.append(article)
 
         return filtered
 
-    def _is_recent(self, article: Article, cutoff: datetime) -> bool:
-        """Check if article date is after cutoff."""
+    def _compute_5am_ct_window(self, run_date: str | date | datetime | None) -> tuple[datetime, datetime]:
+        if run_date is None:
+            run_day = datetime.now(self.CENTRAL_TZ).date()
+        elif isinstance(run_date, datetime):
+            run_day = run_date.date()
+        elif isinstance(run_date, date):
+            run_day = run_date
+        elif isinstance(run_date, str):
+            run_day = datetime.strptime(run_date, "%Y-%m-%d").date()
+        else:
+            raise TypeError("run_date must be None, str, date, or datetime")
+
+        end_ct = datetime.combine(run_day, time(hour=5), tzinfo=self.CENTRAL_TZ)
+        start_ct = end_ct - timedelta(days=1)
+        return start_ct.astimezone(timezone.utc), end_ct.astimezone(timezone.utc)
+
+    def _is_in_window(self, article: Article, start_utc: datetime, end_utc: datetime) -> bool:
+        """Check [start, end) with normalized published timestamp preferred."""
+        raw_ts = article.published_ts or article.date
         try:
-            article_date = self._parse_article_date(article.date)
-            return article_date >= cutoff
+            article_dt = self._parse_article_timestamp(raw_ts)
+            return start_utc <= article_dt < end_utc
         except (ValueError, TypeError):
             # If date parsing fails, include the article (safe default)
             return True
 
-    def _parse_article_date(self, raw_date: str) -> datetime:
-        """Parse common RSS/Atom/ISO date formats into a naive local datetime."""
+    def _parse_article_timestamp(self, raw_date: str) -> datetime:
+        """Parse common RSS/Atom/ISO date formats into UTC-aware datetime."""
         if not raw_date:
             raise ValueError("Missing date")
 
-        # RFC-822/RSS style, e.g. "Wed, 13 May 2026 00:00:00 GMT"
         try:
             parsed = parsedate_to_datetime(raw_date)
             if parsed is not None:
-                if parsed.tzinfo is not None:
-                    return parsed.astimezone().replace(tzinfo=None)
-                return parsed
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
         except (TypeError, ValueError):
             pass
 
-        # ISO-8601 style, e.g. "2026-05-13T00:00:00Z"
         normalized = raw_date.replace("Z", "+00:00")
         parsed_iso = datetime.fromisoformat(normalized)
-        if parsed_iso.tzinfo is not None:
-            return parsed_iso.astimezone().replace(tzinfo=None)
-        return parsed_iso
+        if parsed_iso.tzinfo is None:
+            parsed_iso = parsed_iso.replace(tzinfo=timezone.utc)
+        return parsed_iso.astimezone(timezone.utc)
 
     def deduplicate(self, articles: List[Article]) -> List[Article]:
         """Remove duplicate articles by URL and similar titles."""

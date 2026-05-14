@@ -24,7 +24,7 @@ class Pipeline:
         articles = self.fetcher.fetch()
 
         # Filter
-        articles = self.pre_filter.filter(articles)
+        articles = self.pre_filter.filter(articles, run_date=date)
 
         # Curate (add golden nuggets)
         articles = self.curator.curate(articles)
