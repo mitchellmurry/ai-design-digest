@@ -1,0 +1,38 @@
+version: 1
+schema: ai-design-digest.source-registry
+
+---
+id: bad-tier
+name: Bad Tier Source
+url: https://example.com/bad-tier
+tier: unknown-tier
+type: publication
+trust_weight: 0.75
+topics: ai-research
+fetch_method: rss
+cadence: weekly
+notes: Invalid tier value.
+
+---
+id: bad-fetch
+name: Bad Fetch Source
+url: https://example.com/bad-fetch
+tier: authority
+type: publication
+trust_weight: 0.65
+topics: ai-research
+fetch_method: sitemap
+cadence: weekly
+notes: Invalid fetch method value.
+
+---
+id: bad-weight
+name: Bad Weight Source
+url: https://example.com/bad-weight
+tier: trusted interpretation
+type: publication
+trust_weight: 1.5
+topics: ai-research
+fetch_method: web_listing
+cadence: weekly
+notes: Invalid trust weight value.
