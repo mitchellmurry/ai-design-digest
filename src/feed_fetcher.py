@@ -62,6 +62,8 @@ class FeedFetcher:
         self.registry_path = Path(registry_path) if registry_path else Path(__file__).resolve().parents[1] / "registry" / "sources.v1.txt"
         self.sources = sources if sources is not None else self._load_default_sources()
         self.queue_manager = QueueManager(queue_path) if queue_path else None
+        self.last_source_reports: list[dict] = []
+        self.last_source_errors: list[dict] = []
 
     def _load_default_sources(self) -> list[dict]:
         try:
@@ -87,23 +89,54 @@ class FeedFetcher:
     def fetch(self) -> List[Article]:
         """Fetch articles from all configured sources and queue."""
         articles = []
+        self.last_source_reports = []
+        self.last_source_errors = []
 
         for source in self.sources:
+            checked_ts = datetime.now(timezone.utc).isoformat()
+            source_id = source.get("id") or source.get("name", "unknown")
+            source_name = source.get("name", "")
+            fetch_method = source.get("fetch_method") or source.get("type", "rss")
             try:
                 source_type = source.get("type", "rss")
                 if source_type == "rss":
-                    articles.extend(self._fetch_rss(source))
+                    source_articles = self._fetch_rss(source)
                 elif source_type == "hn_algolia":
-                    articles.extend(self._fetch_hn(source))
+                    source_articles = self._fetch_hn(source)
                 elif source_type == "github_releases":
-                    articles.extend(self._fetch_github_releases(source))
+                    source_articles = self._fetch_github_releases(source)
+                else:
+                    source_articles = []
+
+                articles.extend(source_articles)
+                self.last_source_reports.append({
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "fetch_method": fetch_method,
+                    "status": "ok",
+                    "item_count": len(source_articles),
+                    "checked_ts": checked_ts,
+                })
             except Exception as exc:
                 if self.error_logger:
-                    self.error_logger.log(
-                        source.get("id") or source.get("name", "unknown"),
-                        type(exc).__name__,
-                        str(exc),
-                    )
+                    self.error_logger.log(source_id, type(exc).__name__, str(exc))
+                err = {
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "fetch_method": fetch_method,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                    "checked_ts": checked_ts,
+                }
+                self.last_source_errors.append(err)
+                self.last_source_reports.append({
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "fetch_method": fetch_method,
+                    "status": "error",
+                    "item_count": 0,
+                    "checked_ts": checked_ts,
+                })
 
         if self.queue_manager:
             articles.extend(self._fetch_queue())
