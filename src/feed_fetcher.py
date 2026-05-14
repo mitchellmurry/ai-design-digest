@@ -1,15 +1,23 @@
-"""Feed Fetcher — fetches articles from RSS, HN, GitHub, and personal queue."""
-from dataclasses import dataclass
+"""Feed Fetcher — fetches and normalizes articles from configured sources."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from time import struct_time
 from typing import List
+
 import feedparser
 import requests
-from datetime import datetime
+
 from src.queue_manager import QueueManager
+from src.source_registry import SourceDefinition, load_source_registry
 
 
 @dataclass
 class Article:
     """Normalized article from any source."""
+
     title: str
     summary: str
     url: str
@@ -18,13 +26,30 @@ class Article:
     category: str
     golden_nugget: str = ""
 
+    # Registry-driven normalized fields
+    canonical_url: str = ""
+    dedup_key: str = ""
+    source_id: str = ""
+    source_name: str = ""
+    source_tier: str = ""
+    trust_weight: float = 0.0
+    published_ts: str = ""
+    fetched_ts: str = ""
+    raw_summary: str = ""
+    topic_hints: list[str] = field(default_factory=list)
 
-# Default RSS sources
+
+# Backward compatible fallback source when registry loading fails
 DEFAULT_SOURCES = [
     {
+        "id": "tldr-ai",
         "name": "TLDR AI",
         "url": "https://bullrich.github.io/tldr-rss/ai.rss",
         "category": "ai",
+        "type": "rss",
+        "tier": "trusted interpretation",
+        "trust_weight": 0.75,
+        "topics": ["ai"],
     },
 ]
 
@@ -32,16 +57,37 @@ DEFAULT_SOURCES = [
 class FeedFetcher:
     """Fetches and normalizes articles from configured sources."""
 
-    def __init__(self, sources=None, queue_path=None, error_logger=None):
-        self.sources = sources or DEFAULT_SOURCES
-        self.queue_manager = QueueManager(queue_path) if queue_path else None
+    def __init__(self, sources=None, queue_path=None, error_logger=None, registry_path: str | Path | None = None):
         self.error_logger = error_logger
+        self.registry_path = Path(registry_path) if registry_path else Path(__file__).resolve().parents[1] / "registry" / "sources.v1.txt"
+        self.sources = sources if sources is not None else self._load_default_sources()
+        self.queue_manager = QueueManager(queue_path) if queue_path else None
+
+    def _load_default_sources(self) -> list[dict]:
+        try:
+            registry = load_source_registry(self.registry_path)
+            return [self._source_definition_to_config(s) for s in registry.sources if s.fetch_method == "rss"]
+        except Exception:
+            return list(DEFAULT_SOURCES)
+
+    @staticmethod
+    def _source_definition_to_config(source: SourceDefinition) -> dict:
+        category = source.topics[0] if source.topics else "ai"
+        return {
+            "id": source.id,
+            "name": source.name,
+            "url": source.url,
+            "category": category,
+            "type": "rss",
+            "tier": source.tier,
+            "trust_weight": source.trust_weight,
+            "topics": list(source.topics),
+        }
 
     def fetch(self) -> List[Article]:
         """Fetch articles from all configured sources and queue."""
         articles = []
 
-        # Fetch from configured sources
         for source in self.sources:
             try:
                 source_type = source.get("type", "rss")
@@ -54,12 +100,11 @@ class FeedFetcher:
             except Exception as exc:
                 if self.error_logger:
                     self.error_logger.log(
-                        source.get("name", "unknown"),
+                        source.get("id") or source.get("name", "unknown"),
                         type(exc).__name__,
                         str(exc),
                     )
 
-        # Fetch from personal queue
         if self.queue_manager:
             articles.extend(self._fetch_queue())
 
@@ -71,7 +116,6 @@ class FeedFetcher:
         articles = []
         for url in urls:
             try:
-                # Try fetching as RSS first
                 feed = feedparser.parse(url)
                 if feed.entries:
                     for entry in feed.entries:
@@ -81,17 +125,16 @@ class FeedFetcher:
                             url=entry.get("guid") or entry.get("link", url),
                             source="Personal Queue",
                             date=entry.get("published", ""),
-                            category="ai",  # default category
+                            category="ai",
                         )
                         articles.append(article)
                 else:
-                    # If not RSS, create a placeholder article
                     article = Article(
                         title=url.split("/")[-1] or url,
                         summary="Queued article",
                         url=url,
                         source="Personal Queue",
-                        date=datetime.now().strftime("%a, %d %b %Y %H:%M:%S GMT"),
+                        date=datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT"),
                         category="ai",
                     )
                     articles.append(article)
@@ -102,23 +145,57 @@ class FeedFetcher:
     def _fetch_rss(self, source: dict) -> List[Article]:
         """Fetch articles from an RSS source."""
         feed = feedparser.parse(source["url"])
+        if getattr(feed, "bozo", 0):
+            raise ValueError(f"Invalid RSS feed: {getattr(feed, 'bozo_exception', 'unknown parser error')}")
+
+        fetched_ts = datetime.now(timezone.utc).isoformat()
         articles = []
         for entry in feed.entries:
-            title = str(entry.get("title") or "").strip()
-            url = str(entry.get("guid") or entry.get("link") or "").strip()
-            if not title or not url:
-                continue
-
-            article = Article(
-                title=title,
-                summary=str(entry.get("description") or ""),
-                url=url,
-                source=source["name"],
-                date=str(entry.get("published") or ""),
-                category=source["category"],
-            )
-            articles.append(article)
+            article = self._normalize_rss_entry(entry, source, fetched_ts)
+            if article:
+                articles.append(article)
         return articles
+
+    def _normalize_rss_entry(self, entry: dict, source: dict, fetched_ts: str) -> Article | None:
+        title = str(entry.get("title") or "").strip()
+        raw_url = str(entry.get("link") or entry.get("guid") or "").strip()
+        if not title or not raw_url:
+            return None
+
+        canonical_url = str(entry.get("link") or raw_url).strip()
+        dedup_key = canonical_url.lower() if canonical_url else f"{source.get('id', source.get('name', 'unknown'))}:{raw_url.lower()}"
+        published_ts = self._extract_published_timestamp(entry)
+        raw_summary = str(entry.get("description") or entry.get("summary") or "")
+
+        topic_hints = source.get("topics") or []
+        if isinstance(topic_hints, str):
+            topic_hints = [t.strip() for t in topic_hints.split(",") if t.strip()]
+
+        return Article(
+            title=title,
+            summary=raw_summary,
+            url=raw_url,
+            source=source.get("name", ""),
+            date=published_ts,
+            category=source.get("category") or (topic_hints[0] if topic_hints else "ai"),
+            canonical_url=canonical_url,
+            dedup_key=dedup_key,
+            source_id=source.get("id", ""),
+            source_name=source.get("name", ""),
+            source_tier=source.get("tier", ""),
+            trust_weight=float(source.get("trust_weight", 0.0) or 0.0),
+            published_ts=published_ts,
+            fetched_ts=fetched_ts,
+            raw_summary=raw_summary,
+            topic_hints=topic_hints,
+        )
+
+    @staticmethod
+    def _extract_published_timestamp(entry: dict) -> str:
+        parsed = entry.get("published_parsed")
+        if isinstance(parsed, struct_time):
+            return datetime(*parsed[:6], tzinfo=timezone.utc).isoformat()
+        return str(entry.get("published") or "")
 
     def _fetch_hn(self, source: dict) -> List[Article]:
         """Fetch articles from Hacker News via Algolia API."""
@@ -160,7 +237,7 @@ class FeedFetcher:
         releases = resp.json()
 
         articles = []
-        for release in releases[:10]:  # Last 10 releases
+        for release in releases[:10]:
             article = Article(
                 title=release.get("name") or release.get("tag_name", ""),
                 summary=(release.get("body") or "")[:200],
